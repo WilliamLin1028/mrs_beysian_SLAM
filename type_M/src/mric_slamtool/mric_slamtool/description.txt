@@ -1,0 +1,69 @@
+version:0621
+
+檔案說明
+config :
+    robot_config.yaml : 本機器人能力的基礎設定
+    host_prioity.yaml : 所有機器人在分配任務時，成為拍賣員(auctioneer)的優先順序
+    experiment_robot_team.yaml : 參與實驗的機器人隊伍設定
+    basic_BN.yaml : 當前架構下的貝式網路參數設定
+
+cmd_folder :
+    cmd_start_experiment.txt : 表示實驗開始進行，該檔案會由outside_trigger_experiment.py 建立
+    cmd_request_successrate.txt : 該檔案存在時，會觸發 outside_request_successrate_toA~E.py 向其對應的機器
+                                  人的 outside_reply_successsrate_agent.py 要success rate 資料，該檔案會由
+                                  outside_auctioneer_agent.py 建立與刪除
+    cmd_robot_standby.txt / cmd_robot_ongoing.txt : 這2個檔案分別表示機器人的工作狀態，只會由 inside_executor.py 建立與刪除
+    cmd_robot_{A~E}_attend.txt : 這5個檔案分別表示參與實驗的機器人是哪幾台，只會由 outside_trigger_experiment.py 建立
+    cmd_allocation.txt : 用來觸發 inside_allocation_agent.py 讀取 allocation_{robot_name}_successrate.txt，並計算當前
+                         所有機器人的任務最佳分配，該檔案只會由 outside_auctioneer_agent.py 建立與刪除
+    cmd_update_ongoing_task.txt : 
+
+database:
+    task_list.txt : 會由 outside_auctioneer_agent.py 與 outside_reply_successsrate_agent.py 建立與刪除
+    ongoing_task.txt : 用來記錄當前機器人的任務，會由 outside_ongoing_task_agent.py 建立與刪除
+    local_successrate.txt : 會由 inside_successrate_agent.py 建立，outside_reply_successsrate_agent.py 刪除
+    allocation_{robot_name}_successrate.txt : 只會由 outside_request_successrate_toA~E.py 建立， outside_auctioneer_agent.py 刪除
+    send_{robot_name}_new_task.txt : 用來觸發傳送新的任務給對應的機器人，只會由 outside_auctioneer_agent.py 建立，並由
+
+此版本程式構想如下
+中控端
+1.  啟動 experiment_monitor.py 先取得機器人所有相關資訊如:map, workstatus, auctioneer, 並在開始實驗後收取任務資訊
+    並打開 rviz 顯示不同機器人的地圖與任務位置(尚未加入)
+2.  啟動 experiment_monitor.py 向 topic '/experiment_start' 發送訊息 'Experiment start'
+
+機器人端
+A. 任務觸發與分配
+    1.  機器人進入standby，cmd_robot_standby.txt 存在，觸發 outside_auctioneer_agent.py 
+    2.  outside_auctioneer_agent.py 會確認當前"閒置的機器人"與"拍賣員順位(host_prioity.yaml)"，此階段會由每
+        台機器人自行判斷
+    3.  如果機器人判斷自己為拍賣官，會先讀取舊的 task_list.txt，並計算有哪些任務已經完成、要添加那些任務，再       
+        刪除 task_list.txt，也同時刪除database中所有的 allocation_{robot_name}_successrate.txt 與 best_assignment.txt    (未修正)
+    4.  更新完 task_list.txt 後，建立 cmd_request_successrate.txt 觸發 outside_request_successrate_toA~E.py
+        ，透過讀取新的 task_list.txt  用 service 向其對應的機器人的 outside_reply_successsrate_agent.py 傳送             (未完成)
+        新的 任務資訊 (task_list)，並要求 success rate 資料
+    5.  收到 task_list 的 outside_reply_successsrate_agent.py 會先刪除舊的 task_list.txt，並用新的task_list.txt 取
+        代，再刪除 database 的 {robot_name}_successrate.txt 檔案，以此觸發 inside_successrate_agent.py 的計算，並等
+        待新的 {robot_name}_successrate.txt 出現                                                                         (未修正)
+    6.  inside_successrate_agent.py 會每隔 0.1 秒確認 {robot_name}_successrate.txt 是否存在，如果該檔案消失，
+        則觸發更新 {robot_name}_successrate.txt ，該過程會先讀取當前的 task_list.txt，計算機器人到各任務點的路
+        徑總長，以此推算機器人到達目標的時間(cost)，再根據機器人的當前的狀態參數(如:電量與工作狀態)與預設參數(能
+        力)，將上述幾項資料轉換為 level，並透過匯入 basic_BN.yaml 的貝式網路參數配置來計算每項任務的成功率，最             (未修正)
+        後把各項任務的成功率存成新的 {robot_name}_successrate.txt 
+    7.  outside_reply_successsrate_agent.py 在確認到新的 {robot_name}_successrate.txt 出現後，讀取該檔案並轉成
+        字串(String) 用 service 回傳給 auctioneer 機器人的 outside_request_successrate_toA~E.py 
+    8.  收到回傳 successrate 字串的 outside_request_successrate_toA~E.py 會直接把這些字串存入 
+        allocation_{robot_name}_successrate.txt，當參與實驗的機器人的allocation_{robot_name}_successrate.txt 都被存
+        入database 後，outside_auctioneer_agent.py 會刪除 cmd_request_successrate.txt ，並建立 cmd_allocation.txt
+    9.  當 cmd_allocation.txt 被 inside_allocation_agent.py 偵測到存在時，會先確認當前參與實驗的機器人有哪些(透過確
+        認 cmd_robot_{A~E}_attend.txt 有哪些存在)，並確認參與實驗的機器人的 allocation_{robot_name}_successrate.txt
+        是否都存在，如果都存在時會開始計算最佳任務分配並將分配結果存入 database 的 best_assignment.txt
+    10. 當 outside_auctioneer_agent.py 確認出現到 best_assignment.txt 後，刪除 cmd_allocation.txt，並讀取
+        best_assignment.txt 的分配結果，根據對應的機器人存成 send_{robot_name}_new_task.txt
+    11. 當 send_{robot_name}_new_task.txt 觸發 outside_request_successrate_toA~E.py 用 service 傳送新的 task 資訊給
+        各自對應的機器人
+    12. 收到訊息的 outside_reply_successsrate_agent，會先讀取舊的 ongoing_task.txt 資料，並與新的 task 資訊比對，如
+        果任務資訊不同，則把新的任務資訊覆蓋進 ongoing_task.txt 並 建立 cmd_update_ongoing_task.txt 
+    13. inside_executor.py 在確認到 cmd_update_ongoing_task.txt 檔案存在時，會先等待 ongoing_task.txt 出現，如果
+        ongoing_task.txt 出現，則讀取新的任務資訊，並取消當前任務執行新的任務，並刪除 cmd_update_ongoing_task.txt
+
+1.  先啟動 server 內部程式，機器人進入待機狀態

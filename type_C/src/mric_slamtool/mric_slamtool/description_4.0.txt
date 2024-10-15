@@ -1,0 +1,206 @@
+version:0629.1
+更新說明:
+根據老師的建議，我把success rate agent 與 allocation agent 拿到 server 外，因為在過去的方法中，我們是透過 service
+
+
+檔案說明
+config :
+    robot_config.yaml : 本機器人能力的基礎設定
+    host_prioity.yaml : 所有機器人在分配任務時，成為拍賣員(auctioneer)的優先順序
+    experiment_robot_team.yaml : 參與實驗的機器人隊伍設定
+    basic_BN.yaml : 當前架構下的貝式網路參數設定
+
+cmd_folder :
+    cmd_start_experiment.txt : 表示實驗開始進行，該檔案會由outside_trigger_experiment.py 建立
+    cmd_request_successrate.txt : 該檔案存在時，會觸發 outside_requester_toA~E.py 向其對應的機器人的 outside_receiver.py 要求
+                                  success rate 資料，該檔案會由 outside_auctioneer_agent.py 建立與刪除
+    cmd_robot_standby.txt / cmd_robot_ongoing.txt : 這2個檔案分別表示機器人的工作狀態，只會由 inside_executor.py 建立與刪除
+    cmd_robot_{A~E}_attend.txt : 這5個檔案分別表示參與實驗的機器人是哪幾台，只會由 outside_trigger_experiment.py 建立
+    cmd_wait_for_auctioneer : 該檔案存在時，表示已經有其他機器人正在更新分配任務，因此 outside_auctioneer_agent.py 不會進入分配
+                              機制，該檔案只會由 outside_receiver.py 建立與刪除
+    cmd_allocation.txt : 用來觸發 inside_allocation_agent.py 讀取 allocation_{robot_name}_successrate.txt，並計算當前所有機
+                         器人的任務最佳分配，該檔案只會由 outside_auctioneer_agent.py 建立與刪除
+    cmd_update_ongoing_task.txt : 用來觸發
+    
+
+database:
+    task_list.txt : 格式: {task_name}:{status},{x_pose},{y_pose};{task_name}:{status},{x_pose},{y_pose};...
+                    會由 outside_auctioneer_agent.py 與 outside_receiver.py 建立與刪除
+
+    ongoing_task.txt : 格式: {task_name}:{status},{x_pose},{y_pose}
+                       用來記錄當前機器人的任務，會由 outside_ongoing_task_agent.py 建立與刪除
+
+    fail_task.txt : 格式: {task_name}:{status},{x_pose},{y_pose}
+                    用來觸發 outside_auctioneer_agent.py 更新 task_list 中無法完成的任務，未完成的任務會在 'status' 中標記為 'unreachable'
+                    ，只會由 inside_executor.py 建立 ，並在該任務的 'status' 標記被改變後才會被 outside_auctioneer_agent.py 刪除
+
+    local_successrate.txt : 會由 inside_successrate_agent.py 建立，outside_receiver.py 刪除
+
+    allocation_{robot_name}_successrate.txt : 只會由 outside_requester_toA~E.py 建立， outside_auctioneer_agent.py 刪除
+
+    send_{robot_name}_new_task.txt : 格式: {task_name}:{status},{x_pose},{y_pose}
+                                     用來觸發傳送新的任務給對應的機器人，只會由 outside_auctioneer_agent.py 建立，
+                                     並由 outside_requester_toA~E.py 刪除 (改成直接在outside_auctioneer_agent發送任務)
+
+    best_assignment.txt : 格式: {robot}:{task};{robot}:{task}....
+                          由 inside_allocation_agent.py 建立，outside_auctioneer_agent.py 刪除
+
+各程式簡述
+
+
+此版本程式構想如下
+中控端
+1.  啟動 experiment_monitor.py 先取得機器人所有相關資訊如:map, workstatus, auctioneer, 並在開始實驗後收取任務資訊
+    並打開 rviz 顯示不同機器人的地圖與任務位置(尚未加入)
+2.  啟動 experiment_monitor.py 向 topic '/experiment_start' 發送訊息 'Experiment start'
+
+程式執行指令:
+
+============================[建立 server]============================
+本地 server
+fastdds discovery -i 0 -l 127.0.0.1 -p 11451
+外部 server
+fastdds discovery -i 1 -l 192.168.50.151 -p 11461
+fastdds discovery -i 2 -l 192.168.50.153 -p 11463
+
+========================[server 內 - C robot]========================
+export ROS_DISCOVERY_SERVER=127.0.0.1:11451
+ros2 launch smartrobot mric_typeC_gmapping_navigation_launch.py
+
+--------------------(上述可省略)--------------------
+export ROS_DISCOVERY_SERVER=127.0.0.1:11451
+ros2 launch smartrobot ominibot_clidar_launch.py
+
+export ROS_DISCOVERY_SERVER=127.0.0.1:11451
+ros2 launch mric_slamtool launch_mric_bn_slam_inside.py
+
+export ROS_DISCOVERY_SERVER=127.0.0.1:11451
+rviz2 -d rviz_config_nav_merge_v2.rviz
+
+========================[server 內 - M robot]========================
+export ROS_DISCOVERY_SERVER=127.0.0.1:11451
+ros2 launch smartrobot mric_typeM_gmapping_navigation_launch.py
+
+--------------------(上述可省略)--------------------
+export ROS_DISCOVERY_SERVER=127.0.0.1:11451
+ros2 launch smartrobot ominibot_mlidar_launch.py
+
+export ROS_DISCOVERY_SERVER=127.0.0.1:11451
+ros2 launch mric_slamtool launch_mric_bn_slam_inside.py
+
+export ROS_DISCOVERY_SERVER=127.0.0.1:11451
+rviz2 -d rviz_config_nav_merge_v2.rviz
+
+[launch_mric_bn_slam_inside]===================
+ros2 launch smartrobot ominibot_clidar_launch.py
+
+ros2 run mric_slamtool inside_executor
+
+ros2 run mric_slamtool inside_allocation_agent
+
+ros2 run mric_slamtool inside_mark_task
+
+ros2 run mric_slamtool inside_successrate_agent
+===============================================
+
+============================[server 橋接]============================
+export ROS_DISCOVERY_SERVER="127.0.0.1:11451;192.168.50.151:11461;192.168.50.153:11463"
+ros2 run mric_slamtool bilateral_topic_i2o
+
+----------------------------------------------------------------------
+(C robot)
+export ROS_DISCOVERY_SERVER="127.0.0.1:11451;192.168.50.151:11461;"
+
+(M robot)
+export ROS_DISCOVERY_SERVER="127.0.0.1:11451;;192.168.50.153:11463"
+
+ros2 run mric_slamtool bilateral_topic_o2i
+
+=============================[server 外]=============================
+export ROS_DISCOVERY_SERVER=";192.168.50.151:11461;192.168.50.153:11463"
+
+ros2 launch mric_slamtool launch_mric_bn_slam_outside.py
+================================
+ros2 run mric_slamtool outside_auctioneer_agent
+
+ros2 run mric_slamtool outside_allocation_agent
+
+ros2 run mric_slamtool outside_check_auctioneer_agent
+
+ros2 run mric_slamtool outside_task_agent
+
+ros2 run mric_slamtool outside_sr_rq_reciver
+
+ros2 run mric_slamtool outside_newtask_reciver
+
+ros2 run mric_slamtool outside_auc_lock_reciver
+
+ros2 run mric_slamtool outside_merge_map_agent
+
+ros2 run mric_slamtool outside_pub_workstatus
+
+ros2 run mric_slamtool outside_trigger_experiment
+
+================================
+
+啟動實驗
+export ROS_DISCOVERY_SERVER=";192.168.50.151:11461;192.168.50.153:11463"
+ros2 run mric_slamtool experiment_commander
+
+實驗工具
+ros2 run mric_slamtool tool_save_current_map
+
+機器人端
+A. 任務觸發與分配
+    1.  機器人進入standby，cmd_robot_standby.txt 存在，觸發 outside_auctioneer_agent.py 
+    
+    2.  outside_auctioneer_agent.py 用一個 while 迴圈不斷確認 cmd_robot_standby.txt 存在， 如果 cmd_robot_standby.txt 存在，表示
+        機器人處於無任務狀態。確認 cmd_robot_standby.txt 存在後，會在確認 cmd_wait_for_auctioneer.txt 是否存在，如果存在，則表示目
+        前已經有其他機器人正在進行任務分配與更新，故不進行任務分配；若不存在，則開始進入"挑選拍賣員階段"
+
+    3.  "挑選拍賣員階段"的第一步是確認參與實驗的機器人(確認 outside_trigger_experiment.py 建立了哪幾個 cmd_robot_{A~E}_attend.txt)
+        ，接著再讀取 host_prioity.yaml 取的所有機器人的 auctioneer 順位，透過訂閱 topic "/{robot_name}_workstatus" 的狀態string 來
+        確認參實驗的機器人有哪些是閒置的。在得到"參與實驗的機器人 list"、"機器人的 auctioneer 順位 dict "與"work status list"登資訊
+        後，機器人會自行判斷自身是否為機器人，如果是，則用 service 向每台機器人的 outside_receiver.py 發送正在更新任務的訊息，而收到
+        auctioneer 正在更新任務的 outside_receiver.py 會建立 cmd_wait_for_auctioneer.txt ，防止 auctioneer 在更新任務時，其它機器
+        人也跟著更新任務，並進入"更新任務階段"
+
+    4.  "更新任務階段"會由 outside_auctioneer_agent.py 使用 service 向自身的 outside_task_agent.py (由 outside_auctioneer_agent.py 
+        分離出) 發出任務更新請求，收到請求字串的 outside_task_agent.py 會先確認 task_list.txt 與 fail_task.txt 是否存在，若同時存在
+        則先讀取 fail_task.txt 中無法完成的任務資料，再讀取 task_list.txt 中所有任務的資料，將 task_list.txt 中與 fail_task.txt 相
+        同的任務的 'status' 標記為 'can not complete'，再從當前的 merge_map 中計算有哪些任務已經完成、要添加幾個新任務；若只有 
+        task_list.txt 存在，則直接從當前的 merge_map 中計算有哪些任務已經完成、要添加幾個新任務。
+        
+    5.  更新完舊的 task_list 後，我們會得到需要添加的任務 ( task_list 中 'status' 標記為 'unexplored' 的任務) 數量進行"任務添加"，並
+        從當前的 merge_map 未探索的區域中挑出對應數量的新任務座標加入 task_list 中；若 task_list.txt 與 fail_task.txt 皆不存在，則直
+        接進行"任務添加"。完成"任務添加"後，先刪除舊的 task_list.txt，再把更新後的 task_list 存入 task_list.txt，再用 service 回傳
+        task_list 的字串。
+
+    6.  收到 service 回傳的 task_list 字串， outside_auctioneer_agent.py 再把新的 task_list 用 service 向其他機器人的 success rate
+        agent (outside_successrate_agent 由 inside_successrate_agent.py 修改而成)要求新的任務成功率 (格式 : task_1:{success_rate};t
+        ask_2:{success_rate};...)字串
+
+    7.  收到 所有 參與實驗機器人的 successrate_agent service 回傳的 successrate_list 字串的 outside_auctioneer_agent.py， 會先把這些
+        字串拼接在一起，再用另一個service 向自身的 outside_allocation_agent.py 傳送 all_robot_successrate_string (格式 : robot_A:tas
+        k_1,{success_rate};task_2,{success_rate};....$robot_B:task_1,{success_rate};...)要求分配任務
+
+    8.  outside_allocation_agent.py 再收到 all_robot_successrate_string 後，先把用'$'切割，把字串裁切出每個機器人的資料，用':'切割出每
+        個機器人的'機器人名稱'與'任務資訊'，再用','把'任務資訊'裁切成'任務名稱'與'任務成功率'，並存入 dict 中，再用匈牙利人演算法機算每個
+        機器人要如何分配才能讓總體任務成功率最高，最後回傳機器人的任務份配資訊 best_assignment (格式 : robot_A:{task_name};robot_B:{tas
+        k_name};....)
+        
+        
+    9.  收到 service 回傳的 task_allocation_string ， outside_allocation_agent.py 會先用 ';' 把 best_assignment 裁切出每個機器人的資訊
+        ，再用':'把該資訊分成'機器人名稱'與'任務名稱'存入 dict 中，再讀取 task_list dict ，依機器人名稱取得與其對應的任務資訊，並用service
+        向每台機器人的 outside_execution_management_agent.py 傳送新的任務資訊
+
+    10. 收到新任務資訊的 outside_execution_management_agent.py 會先判斷新的任務資訊是否與舊的任務資訊一致，如果相同則直接回傳"Recive!!"
+        ，若不同則刪除 ongoing_task.txt，並建立 cmd_update_ongoing_task.txt
+
+    11. inside_executor.py 在確認到 cmd_update_ongoing_task.txt 檔案存在時，會先確認 ongoing_task.txt 存在，如果
+        ongoing_task.txt 存在，則讀取新的任務資訊，並取消當前任務執行新的任務，並刪除 cmd_update_ongoing_task.txt 與 
+        cmd_robot_standby.txt，再建立 cmd_robot_ongoing.txt
+
+    15. fail_task
+
+1.  先啟動 server 內部程式，機器人進入待機狀態

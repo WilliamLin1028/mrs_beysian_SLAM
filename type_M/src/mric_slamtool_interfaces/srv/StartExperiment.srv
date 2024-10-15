@@ -1,0 +1,8 @@
+string start_experiment
+string robot_a_attend
+string robot_b_attend
+string robot_c_attend
+string robot_d_attend
+string robot_e_attend
+---
+string reply_finish

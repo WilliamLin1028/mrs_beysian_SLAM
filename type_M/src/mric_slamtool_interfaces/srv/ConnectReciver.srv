@@ -1,0 +1,7 @@
+string allocation_lock
+string tasks_list
+string assigned_task
+---
+string reply_allocation
+string reply_successrate
+string reply_task
